@@ -1,0 +1,229 @@
+#==============================================================================================
+#
+#   plist_tests - The property list reader's tests, over lists built byte by byte
+#
+#   DESCRIPTION:
+#       A small builder writes objects, the offset table (two-byte offsets) and the
+#       trailer (one-byte references), so each test can state exactly the bytes it
+#       reads, damage them, and check the error. Real brushes and a plistlib-written
+#       fixture are checked by tests/run.py through tests/inspect.lucb.
+#
+#==============================================================================================
+import memory
+import luce_procreate.plist as plist
+from luce_procreate.plist import Plist, parse, unarchive
+
+## Writes a binary property list into a caller's buffer.
+struct Builder:
+    var out: u8[]
+    var at: usize = 8
+    var offsets: usize[128]
+    var count: usize
+
+    ## Start the next object; returns its index.
+    mutating func begin() -> usize:
+        self.offsets[self.count] = self.at
+        self.count += 1
+        return self.count - 1
+
+    mutating func byte(value: u8):
+        self.out[self.at] = value
+        self.at += 1
+
+    mutating func put(data: const u8[]):
+        for value in data:
+            self.byte(value)
+
+    ## An ASCII string object.
+    mutating func ascii(text: str) -> usize:
+        let index = self.begin()
+        self.byte(0x50 | (u8)text.length)
+        self.put(text.bytes)
+        return index
+
+    ## A one-byte integer object.
+    mutating func small(value: u8) -> usize:
+        let index = self.begin()
+        self.byte(0x10)
+        self.byte(value)
+        return index
+
+    ## A UID object naming `value`.
+    mutating func uid(value: u8) -> usize:
+        let index = self.begin()
+        self.byte(0x80)
+        self.byte(value)
+        return index
+
+    ## A container header: `marker` (0xA0 array, 0xD0 dictionary) with `count`, then `references`.
+    mutating func container(marker: u8, count: usize, references: const u8[]) -> usize:
+        let index = self.begin()
+        self.byte(marker | (u8)count)
+        self.put(references)
+        return index
+
+    ## The offset table and trailer; returns the list's length.
+    mutating func finish(top: usize) -> usize:
+        let table = self.at
+        for index in 0..<self.count:
+            self.byte((u8)(self.offsets[index] >> 8))
+            self.byte((u8)self.offsets[index])
+        let fields: u8[6] = [0, 0, 0, 0, 0, 0]
+        self.put(fields)
+        self.byte(2)
+        self.byte(1)
+        self.word(self.count)
+        self.word(top)
+        self.word(table)
+        return self.at
+
+    ## An eight-byte big-endian trailer field.
+    mutating func word(value: usize):
+        for shift in 0..<(usize)8:
+            self.byte((u8)(value >> ((7 - shift) * 8)))
+
+## A builder over `out` with the header written.
+func builder(out: u8[]) -> Builder:
+    let magic = "bplist00"
+    for index in 0..<(usize)8:
+        out[index] = magic.bytes[index]
+    return Builder(out = out)
+
+## Whether parsing `data` fails with `code`.
+func fails(data: const u8[], code: ErrorCode) -> bool:
+    var list = parse(data) catch failure:
+        return failure.code == code
+    list.close()
+    return false
+
+test "every object kind reads back":
+    var buffer: u8[1024]
+    var b = builder(buffer)
+    # Object 0 is the top array, naming objects 1 to 13.
+    discard(b.container(0xA0, 13, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]))
+    discard(b.begin())
+    b.byte(0x00)
+    discard(b.begin())
+    b.byte(0x09)
+    discard(b.small(7))
+    discard(b.begin())
+    b.put([0x11, 0x01, 0x2C])
+    discard(b.begin())
+    b.put([0x13, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFB])
+    discard(b.begin())
+    b.put([0x23, 0x3F, 0xF8, 0, 0, 0, 0, 0, 0])
+    discard(b.begin())
+    b.put([0x22, 0x3E, 0x80, 0, 0])
+    discard(b.begin())
+    b.put([0x33, 0x41, 0xC0, 0, 0, 0, 0, 0, 0])
+    discard(b.begin())
+    b.put([0x42, 0x61, 0x62])
+    discard(b.ascii("hi"))
+    # UTF-16: "é" and U+1F600 as a surrogate pair.
+    discard(b.begin())
+    b.put([0x63, 0x00, 0xE9, 0xD8, 0x3D, 0xDE, 0x00])
+    discard(b.uid(3))
+    discard(b.container(0xD0, 1, [10, 3]))
+    let length = b.finish(0)
+    var list = try parse(buffer[..<length])
+    defer list.close()
+    assert(list.values[0].kind == plist.kind_array and list.values[0].count == 13)
+    assert(list.values[list.item(0, 0)].kind == plist.kind_null)
+    assert(list.values[2].kind == plist.kind_bool and list.values[2].integer == 1)
+    assert(list.values[3].kind == plist.kind_integer and list.values[3].integer == 7)
+    assert(list.values[4].integer == 300 and list.values[5].integer == -5)
+    assert(list.values[6].kind == plist.kind_real and list.values[6].real == 1.5)
+    assert(list.values[7].real == 0.25)
+    assert(list.values[8].kind == plist.kind_date and list.values[8].real == 536870912.0)
+    assert(list.values[9].kind == plist.kind_data and (str)list.values[9].bytes == "ab")
+    let hi = list.string(10) else ""
+    assert(hi == "hi")
+    let unicode = list.string(11) else ""
+    assert(unicode == "\u{E9}\u{1F600}")
+    assert(list.values[12].kind == plist.kind_uid and list.values[12].integer == 3)
+    let found = list.member(13, "hi") else 0
+    assert(found == 3)
+    assert(list.member(13, "missing") == none)
+
+test "damaged lists fail with their codes":
+    var buffer: u8[256]
+    var b = builder(buffer)
+    discard(b.container(0xA0, 2, [1, 2]))
+    discard(b.ascii("a"))
+    discard(b.small(1))
+    let length = b.finish(0)
+    var list = try parse(buffer[..<length])
+    list.close()
+    assert(fails(b"", plist.invalid))
+    assert(fails(b"bplist01 and then quite a lot more bytes that are not a list", plist.invalid))
+    for cut in 0..<length:
+        assert(fails(buffer[..<cut], plist.invalid))
+    # A reference to an object that does not exist.
+    buffer[9] = 9
+    assert(fails(buffer[..<length], plist.invalid))
+    buffer[9] = 0
+    # The array now holds itself.
+    assert(fails(buffer[..<length], plist.invalid))
+    buffer[9] = 1
+    # An offset into the offset table.
+    let table = length - 32 - 6
+    buffer[table + 3] = 40
+    assert(fails(buffer[..<length], plist.invalid))
+
+test "nesting and object counts are limited":
+    var buffer: u8[2048]
+    var b = builder(buffer)
+    for index in 0..<(usize)100:
+        if index < 99:
+            let next: u8[1] = [(u8)(index + 1)]
+            discard(b.container(0xA0, 1, next))
+        else:
+            discard(b.small(1))
+    let length = b.finish(0)
+    assert(fails(buffer[..<length], plist.limit))
+    var deep = try parse(buffer[..<length], max_depth = 128)
+    deep.close()
+    var few = parse(buffer[..<length], max_objects = 10, max_depth = 128) catch failure:
+        assert(failure.code == plist.limit)
+        return
+    few.close()
+    assert(false)
+
+test "a keyed archive follows UIDs from its root and reads $null as absent":
+    var buffer: u8[1024]
+    var b = builder(buffer)
+    # 0 top {$objects: 1, $top: 2}; 3..5 the keys; 1 $objects [6 $null, 7 root, 8 name, 9 wrapped].
+    discard(b.container(0xD0, 2, [3, 4, 1, 2]))
+    discard(b.container(0xA0, 4, [6, 7, 8, 9]))
+    discard(b.container(0xD0, 1, [5, 10]))
+    discard(b.ascii("$objects"))
+    discard(b.ascii("$top"))
+    discard(b.ascii("root"))
+    discard(b.ascii("$null"))
+    discard(b.container(0xD0, 4, [11, 12, 13, 14, 15, 16, 17, 18]))
+    discard(b.ascii("Soft"))
+    discard(b.container(0xD0, 1, [19, 20]))
+    discard(b.uid(1))
+    discard(b.ascii("name"))
+    discard(b.ascii("gone"))
+    discard(b.ascii("size"))
+    discard(b.ascii("note"))
+    discard(b.uid(2))
+    discard(b.uid(0))
+    discard(b.small(12))
+    discard(b.uid(3))
+    discard(b.ascii("NS.string"))
+    discard(b.ascii("wrapped"))
+    let length = b.finish(0)
+    var archive = try unarchive(buffer[..<length])
+    defer archive.close()
+    assert(archive.root == 7)
+    let name = archive.member(archive.root, "name") else 0
+    let text = archive.text(name) else ""
+    assert(text == "Soft")
+    assert(archive.member(archive.root, "gone") == none)
+    let size = archive.member(archive.root, "size") else 0
+    assert(archive.plist.values[size].integer == 12)
+    let note = archive.member(archive.root, "note") else 0
+    let wrapped = archive.text(note) else ""
+    assert(wrapped == "wrapped")

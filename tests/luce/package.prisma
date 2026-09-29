@@ -1,0 +1,17 @@
+#prisma 4.0
+def package "luce_procreate_smoke" {
+    str source = "."
+    def dependency "luce-procreate" {
+        str path = "../.."
+    }
+    def dependency "luce-compress" {
+        str owner = "dymokomi"
+        str version = "^0.3.0"
+        str path = "../../../luce-compress"
+    }
+    def dependency "luce-std" {
+        str owner = "dymokomi"
+        str version = "^0.1.4"
+        str path = "../../../luce-std"
+    }
+}

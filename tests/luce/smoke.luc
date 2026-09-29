@@ -1,0 +1,30 @@
+# A Luce caller reading a brush the way luced-2d will: open it by path, read its
+# name, settings and images, and see a closed brush refuse further use.
+from procreate import ProcreateBrush
+
+pub func main(arguments: list[str]) -> int!:
+    assert(arguments.length >= 1)
+    let brush = ProcreateBrush.open(arguments[arguments.length - 1])
+    assert(brush.name() == "Tiny \u{2713} brush")
+    assert(brush.number("paintSize", 0.0) == 0.25)
+    assert(brush.number("oriented", 0.0) == 1.0)
+    assert(brush.number("missing", 7.5) == 7.5)
+    assert(brush.has("plotSpacing") and not brush.has("bundledShapePath"))
+    assert(brush.text("bundledGrainPath") == "Brush-Preset-Blank.png")
+    assert(brush.text("bundledShapePath") == "")
+    let shape = brush.shape_png()
+    assert(shape.length > 8 and shape[1] == 80 and shape[2] == 78 and shape[3] == 71)
+    assert(brush.grain_png().length == 0)
+    assert(brush.thumbnail_png().length > 0)
+    var keys = 0
+    for index in 0..<brush.key_count():
+        if brush.key(index) == "plotSpacing":
+            keys += 1
+    assert(keys == 1)
+    brush.close()
+    var refused = false
+    discard(brush.shape_png()) catch failure:
+        refused = true
+    assert(refused)
+    print("PASS Luce opens a Procreate brush: name, settings, images and close")
+    return 0

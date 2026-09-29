@@ -1,0 +1,54 @@
+#==============================================================================================
+#
+#   inspect - Prints what luce-procreate reads from each brush named on the command line
+#
+#   DESCRIPTION:
+#       For every path: `BRUSH <path>`, then its name, image sizes, and every setting as
+#       a number or text, one per line, then `END`; or `FAIL <path>\t<message>`. The
+#       test harness compares this with Python's zipfile and plistlib reading the same
+#       file, for the generated fixture and for any local folder of real brushes.
+#
+#==============================================================================================
+import interop
+import procreate
+from procreate import ProcreateBrush
+
+pub func main(arguments: str[]) -> i32!:
+    var failures = 0
+    for index in 1..<arguments.length:
+        let path = arguments[index]
+        inspect(path) catch failure:
+            print(f"FAIL {path}\t{failure.message}")
+            failures += 1
+    return 1 if failures > 0 else 0
+
+## Print one brush's reading.
+func inspect(path: str) -> !:
+    let reference = try ProcreateBrush.open(path)
+    defer reference.release()
+    let brush = reference.value()
+    let name = try brush.name()
+    defer name.release()
+    print(f"BRUSH {path}")
+    print(f"NAME {name.value}")
+    print(f"SHAPE {(try brush.shape_png()).length}")
+    print(f"GRAIN {(try brush.grain_png()).length}")
+    print(f"THUMBNAIL {(try brush.thumbnail_png()).length}")
+    let count = try brush.key_count()
+    print(f"KEYS {count}")
+    for index in 0..<count:
+        let key = try brush.key(index)
+        defer key.release()
+        let text = try brush.text(key.value)
+        defer text.release()
+        # A number's fallback differs between the two reads only when there is none.
+        let number = try brush.number(key.value, -1.0)
+        if number == (try brush.number(key.value, -2.0)):
+            print(f"NUMBER {key.value} {number}")
+        elif text.value.length > 0:
+            print(f"TEXT {key.value} {text.value}")
+        elif not (try brush.has(key.value)):
+            print(f"NULL {key.value}")
+        else:
+            print(f"OTHER {key.value}")
+    print("END")

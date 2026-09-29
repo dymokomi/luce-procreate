@@ -1,0 +1,29 @@
+#prisma 4.0
+def package "luce-procreate" {
+    str owner = "dymokomi"
+    str version = "0.1.0"
+    str kind = "package"
+    str language = "luce-base"
+    str description = "A Procreate brush (.brush) reader for Luce/Base: the archived settings, name and shape, grain and thumbnail PNGs, through a binary property list and NSKeyedArchiver reader."
+    str readme = "README.md"
+
+    def export "procreate" {
+        str module = "luce_procreate.brush"
+    }
+
+    def export "plist" {
+        str module = "luce_procreate.plist"
+    }
+
+    def dependency "luce-std" {
+        str owner = "dymokomi"
+        str version = "^0.1.4"
+        str path = "../luce-std"
+    }
+
+    def dependency "luce-compress" {
+        str owner = "dymokomi"
+        str version = "^0.2.4"
+        str path = "../luce-compress"
+    }
+}

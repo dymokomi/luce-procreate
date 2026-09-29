@@ -1,0 +1,179 @@
+#==============================================================================================
+#
+#   brush - Procreate brushes (.brush): the archived settings and the brush's images
+#
+#   DESCRIPTION:
+#       A `.brush` file is a ZIP holding `Brush.archive` (an NSKeyedArchiver binary
+#       property list whose root is a SilicaBrush object: paintSize, plotSpacing,
+#       shapeScatter, dynamicsPressureSize, textureScale, name, ...), and when the brush
+#       carries its own images `Shape.png` (the tip), `Grain.png` (the texture) and
+#       `QuickLook/Thumbnail.png`. A brush that uses one of Procreate's built-in images
+#       names it instead in `bundledShapePath` / `bundledGrainPath`.
+#
+#       `ProcreateBrush` reads all of that once, into memory of its own, and is exported
+#       to Luce as an owned object: settings are asked for by key, as numbers or text,
+#       and the PNGs are handed over as bytes for an image decoder. Turning the settings
+#       into a luced-2d brush is the caller's; this package only reads.
+#
+#==============================================================================================
+import c as c_api
+import files
+import interop
+import memory
+import strings
+import zip
+import luce_procreate.plist as plist
+
+## The bytes are not a brush this reader understands.
+pub let invalid = plist.invalid
+## The brush is larger than this reader will hold.
+pub let limit = plist.limit
+## The brush was closed.
+pub let closed: ErrorCode = ErrorCode.package(3)
+
+## The largest `.brush` file read: 512 MiB.
+pub let brush_file_limit: usize = 536870912
+## The largest `Brush.archive`: 16 MiB (real ones are a few KiB).
+pub let archive_limit: usize = 16777216
+## The largest image entry: 256 MiB.
+pub let image_limit: usize = 268435456
+
+## A Procreate brush: its archived settings and its images, owned.
+pub struct ProcreateBrush:
+    ## `Brush.archive`'s bytes, which the parsed archive borrows.
+    var archive_bytes: u8[]
+    var archive: plist.KeyedArchive
+    var shape: u8[]
+    var grain: u8[]
+    var thumbnail: u8[]
+    var closed: bool
+
+    ## The brush in the `.brush` file at `path`.
+    pub static func open(path: str) -> interop.Reference[ProcreateBrush]!:
+        var name: str = ""
+        with memory.heap:
+            name = try strings.copy(path)
+        defer strings.release(name)
+        var data: u8[]
+        with memory.heap:
+            data = try files.read_limit((c_api.str)name, brush_file_limit)
+        defer free(data) in memory.heap
+        return try ProcreateBrush.from_bytes(data)
+
+    ## The brush in `data`, the bytes of a `.brush` file; they are copied, not kept.
+    pub static func from_bytes(data: const u8[]) -> interop.Reference[ProcreateBrush]!:
+        var archive = zip.open(data) catch failure:
+            error(invalid, failure.message)
+        defer archive.close()
+        if not archive.has("Brush.archive"):
+            error(invalid, "not a Procreate brush: no Brush.archive")
+        var reservation = try interop.Reservation[ProcreateBrush](procreate_brush_type)
+        errdefer reservation.cancel()
+        var brush = ProcreateBrush()
+        errdefer brush.close()
+        brush.archive_bytes = try entry(&archive, "Brush.archive", archive_limit)
+        brush.archive = try plist.unarchive(brush.archive_bytes)
+        if brush.archive.plist.values[brush.archive.root].kind != plist.kind_dictionary:
+            error(invalid, "the brush's archived root is not an object")
+        brush.shape = try entry(&archive, "Shape.png", image_limit)
+        brush.grain = try entry(&archive, "Grain.png", image_limit)
+        brush.thumbnail = try entry(&archive, "QuickLook/Thumbnail.png", image_limit)
+        let native = try new ProcreateBrush() in memory.heap
+        *native = brush
+        return reservation.publish(native, memory.heap)
+
+    ## The brush's name as Procreate shows it; empty when it has none.
+    pub func name() -> interop.Owned[str]!:
+        return try self.text("name")
+
+    ## Whether the brush has the setting `key` (one that is not null).
+    pub func has(key: str) -> bool!:
+        try self.require_open()
+        if let found = self.archive.member(self.archive.root, key):
+            return true
+        return false
+
+    ## The setting `key` as a number: an integer, a real, or a bool as 0 or 1;
+    ## `fallback` when the brush has no such number.
+    pub func number(key: str, fallback: f64 = 0.0) -> f64!:
+        try self.require_open()
+        let found = self.archive.member(self.archive.root, key) else return fallback
+        let value = self.archive.plist.values[found]
+        if value.kind == plist.kind_integer or value.kind == plist.kind_bool:
+            return (f64)value.integer
+        if value.kind == plist.kind_real:
+            return value.real
+        return fallback
+
+    ## The setting `key` as text (for instance `bundledShapePath`, the built-in shape
+    ## a brush without its own uses); empty when the brush has no such text.
+    pub func text(key: str) -> interop.Owned[str]!:
+        try self.require_open()
+        if let found = self.archive.member(self.archive.root, key):
+            if let text = self.archive.text(found):
+                return try interop.copy_text(text)
+        return try interop.copy_text("")
+
+    ## `Shape.png`, the brush tip; empty when the brush uses a built-in shape.
+    pub func shape_png() -> const u8[]!:
+        try self.require_open()
+        return self.shape
+
+    ## `Grain.png`, the brush texture; empty when the brush uses a built-in grain.
+    pub func grain_png() -> const u8[]!:
+        try self.require_open()
+        return self.grain
+
+    ## `QuickLook/Thumbnail.png`, the stroke preview; empty when there is none.
+    pub func thumbnail_png() -> const u8[]!:
+        try self.require_open()
+        return self.thumbnail
+
+    ## How many settings the brush's archived object has (its keys, `$class` included).
+    pub func key_count() -> i64!:
+        try self.require_open()
+        return (i64)self.archive.plist.values[self.archive.root].count
+
+    ## The `index`th setting's key, in archive order, for listing what a brush holds.
+    pub func key(index: i64) -> interop.Owned[str]!:
+        try self.require_open()
+        let root = self.archive.root
+        if index < 0 or index >= (i64)self.archive.plist.values[root].count:
+            error(invalid, "no setting at that index")
+        let text = self.archive.plist.string(self.archive.plist.key(root, (usize)index)) else ""
+        return try interop.copy_text(text)
+
+    func require_open() -> !:
+        if self.closed:
+            error(closed, "the brush is closed")
+
+    ## Free the brush's settings and images; later calls fail with `closed`.
+    pub mutating func close():
+        if self.closed:
+            return
+        self.closed = true
+        self.archive.close()
+        release(self.archive_bytes)
+        release(self.shape)
+        release(self.grain)
+        release(self.thumbnail)
+
+pub let procreate_brush_type: interop.Type[ProcreateBrush] = interop.Type[ProcreateBrush]("ProcreateBrush", ProcreateBrush.close, closeable = true)
+
+## Entry `name` of the brush's ZIP in a heap buffer, empty when it is absent.
+func entry(archive: zip.Archive*, name: str, max_size: usize) -> u8[]!:
+    var empty: u8[]
+    let found = archive.find(name) else return empty
+    let bytes = archive.extract(found, max_size) catch failure:
+        if failure.code == zip.limit:
+            error(limit, failure.message)
+        error(invalid, failure.message)
+    if bytes.length == 0:
+        free(bytes) in memory.heap
+        return empty
+    return bytes
+
+## Free a heap buffer that may be empty (never allocated).
+func release(bytes: u8[]):
+    if bytes.length > 0:
+        free(bytes) in memory.heap

@@ -1,0 +1,384 @@
+#==============================================================================================
+#
+#   plist - Binary property lists (bplist00) and the NSKeyedArchiver graphs inside them
+#
+#   DESCRIPTION:
+#       `parse` reads Apple's binary property list: the trailer at the end (offset and
+#       reference sizes, object count, top object, offset table), then every object
+#       the offset table names into one flat list of `Value`s. Scalars (null, bool,
+#       integer, real, date, UID) are held in the value; data and ASCII strings borrow
+#       the caller's bytes; UTF-16 strings are converted to UTF-8 into one text pool;
+#       arrays and dictionaries hold a run of object indices in one reference pool (a
+#       dictionary's keys, then its values). Every offset, length and reference is
+#       checked against the bytes, the object count is capped, and containers are
+#       walked once to reject cycles and nesting deeper than a limit.
+#
+#       `unarchive` reads what NSKeyedArchiver writes on top of that: a dictionary
+#       whose `$objects` array holds every archived object and whose `$top` names the
+#       root by UID. A member of an archived object is followed through its UID to the
+#       object it names, and the "$null" placeholder reads as absent.
+#
+#       Base only: a `Plist` borrows the bytes it was parsed from; keep them alive.
+#
+#==============================================================================================
+import memory
+import utf8
+
+## The bytes are not a binary property list or keyed archive this reader understands.
+pub let invalid: ErrorCode = ErrorCode.package(1)
+## The property list is larger or deeper than the reader's limits.
+pub let limit: ErrorCode = ErrorCode.package(2)
+
+## What a `Value` holds.
+pub let kind_null: u8 = 0
+pub let kind_bool: u8 = 1
+pub let kind_integer: u8 = 2
+pub let kind_real: u8 = 3
+## Seconds since 2001-01-01 UTC, in `real`.
+pub let kind_date: u8 = 4
+pub let kind_data: u8 = 5
+pub let kind_string: u8 = 6
+## A keyed archive's reference to an object in `$objects`, its index in `integer`.
+pub let kind_uid: u8 = 7
+pub let kind_array: u8 = 8
+pub let kind_dictionary: u8 = 9
+
+## The default cap on objects in one property list.
+pub let default_object_limit: usize = 1048576
+## The default cap on containers nested in containers.
+pub let default_depth_limit: usize = 64
+
+## One object of a property list.
+pub struct Value:
+    pub var kind: u8
+    ## A bool (0/1), an integer, or a UID's index.
+    pub var integer: i64
+    ## A real or a date.
+    pub var real: f64
+    ## A data object's bytes, or a string's UTF-8.
+    pub var bytes: const u8[]
+    ## An array's or dictionary's first reference in `Plist.references`.
+    pub var first: usize
+    ## An array's items, or a dictionary's pairs.
+    pub var count: usize
+
+## A parsed property list. `close` frees its lists; the bytes stay the caller's.
+pub struct Plist:
+    pub var values: Value[]
+    ## Object indices for every container: an array's items; a dictionary's keys then values.
+    pub var references: usize[]
+    ## The UTF-8 of every UTF-16 string.
+    pub var text: u8[]
+    ## The top object's index.
+    pub var top: usize
+
+    ## The `index`th item of array `container`.
+    pub func item(container: usize, index: usize) -> usize:
+        return self.references[self.values[container].first + index]
+
+    ## The `index`th key of dictionary `container`.
+    pub func key(container: usize, index: usize) -> usize:
+        return self.references[self.values[container].first + index]
+
+    ## The `index`th value of dictionary `container`.
+    pub func member_at(container: usize, index: usize) -> usize:
+        let value = self.values[container]
+        return self.references[value.first + value.count + index]
+
+    ## The value under the string key `name` in dictionary `container`, if both are so.
+    pub func member(container: usize, name: str) -> usize?:
+        let value = self.values[container]
+        if value.kind != kind_dictionary:
+            return none
+        for index in 0..<value.count:
+            let key = self.values[self.references[value.first + index]]
+            if key.kind == kind_string and (str)key.bytes == name:
+                return self.references[value.first + value.count + index]
+        return none
+
+    ## Object `index` as text, if it is a string.
+    pub func string(index: usize) -> str?:
+        let value = self.values[index]
+        if value.kind != kind_string:
+            return none
+        return (str)value.bytes
+
+    pub mutating func close():
+        if self.values.length > 0:
+            free(self.values) in memory.heap
+        if self.references.length > 0:
+            free(self.references) in memory.heap
+        if self.text.length > 0:
+            free(self.text) in memory.heap
+        var no_values: Value[]
+        var no_references: usize[]
+        var no_text: u8[]
+        self.values = no_values
+        self.references = no_references
+        self.text = no_text
+
+## An object's marker and length, and where its contents start.
+struct Head:
+    var marker: u8
+    var length: usize
+    var start: usize
+
+## Reads the objects of one property list; `end` is where the trailer starts.
+struct Reader:
+    var data: const u8[]
+    var end: usize
+    var offset_size: usize
+    var reference_size: usize
+    var count: usize
+    var table: usize
+
+    ## The `size`-byte big-endian number at `at`, which must lie before `end`.
+    func number(at: usize, size: usize) -> u64!:
+        if at > self.end or self.end - at < size:
+            error(invalid, "a property list field runs past its end")
+        var value: u64 = 0
+        for index in 0..<size:
+            value = (value << 8) | (u64)self.data[at + index]
+        return value
+
+    ## Where object `index` starts.
+    func offset(index: usize) -> usize!:
+        let at = try self.number(self.table + index * self.offset_size, self.offset_size)
+        if at < 8 or at >= (u64)self.table:
+            error(invalid, "a property list object lies outside the object area")
+        return (usize)at
+
+    ## The object reference at `at`, checked against the object count.
+    func reference(at: usize) -> usize!:
+        let value = try self.number(at, self.reference_size)
+        if value >= (u64)self.count:
+            error(invalid, "a property list reference names no object")
+        return (usize)value
+
+    ## The marker of the object at `at` and its length: the marker's low nibble, or
+    ## the integer after it when that is 15.
+    func head(at: usize) -> Head!:
+        let marker = (u8)(try self.number(at, 1))
+        var length = (usize)(marker & 15)
+        var start = at + 1
+        if length == 15 and marker >> 4 != 0 and marker >> 4 != 1 and marker >> 4 != 2 and marker >> 4 != 3 and marker >> 4 != 8:
+            let size_marker = (u8)(try self.number(start, 1))
+            if size_marker >> 4 != 1 or (size_marker & 15) > 3:
+                error(invalid, "a property list length is not an integer")
+            let size = (usize)1 << (usize)(size_marker & 15)
+            let value = try self.number(start + 1, size)
+            if value > (u64)self.end:
+                error(invalid, "a property list length runs past its end")
+            length = (usize)value
+            start += 1 + size
+        return Head(marker = marker, length = length, start = start)
+
+    ## The bytes object `head` covers, `width` bytes per element.
+    func span(head: Head, width: usize) -> const u8[]!:
+        if head.start > self.end or (self.end - head.start) // width < head.length:
+            error(invalid, "a property list object runs past its end")
+        if head.length == 0:
+            return b""
+        return self.data[head.start..<head.start + head.length * width]
+
+## The property list in `data`, every object read and checked. Fails with `invalid`
+## when it is not a bplist00 or contradicts itself, and with `limit` beyond
+## `max_objects` objects or `max_depth` nested containers. Close the result.
+pub func parse(data: const u8[], max_objects: usize = default_object_limit, max_depth: usize = default_depth_limit) -> Plist!:
+    if data.length < 40 or (str)data[..<8] != "bplist00":
+        error(invalid, "not a binary property list")
+    let end = data.length - 32
+    var reader = Reader(data = data, end = data.length, offset_size = (usize)data[end + 6], reference_size = (usize)data[end + 7])
+    if reader.offset_size < 1 or reader.offset_size > 8 or reader.reference_size < 1 or reader.reference_size > 8:
+        error(invalid, "a property list's offset or reference size is not 1 to 8 bytes")
+    let count = try reader.number(end + 8, 8)
+    let top = try reader.number(end + 16, 8)
+    let table = try reader.number(end + 24, 8)
+    if count == 0 or top >= count or table < 9 or table > (u64)end:
+        error(invalid, "a property list's trailer is inconsistent")
+    if count > (u64)max_objects:
+        error(limit, "the property list has more objects than the limit")
+    if count > ((u64)end - table) // (u64)reader.offset_size:
+        error(invalid, "a property list's offset table runs past its end")
+    reader.count = (usize)count
+    reader.table = (usize)table
+    reader.end = end
+    # First pass: how many references and how much UTF-8 the containers and UTF-16 need.
+    var reference_total: usize = 0
+    var text_total: usize = 0
+    for index in 0..<reader.count:
+        let head = try reader.head(try reader.offset(index))
+        let tag = head.marker >> 4
+        if tag == 10:
+            reference_total += head.length
+        elif tag == 13:
+            reference_total += head.length * 2
+        elif tag == 6:
+            text_total += (try reader.span(head, 2)).length // 2 * 3
+        if reference_total > reader.table or text_total > reader.table * 2:
+            error(invalid, "a property list's containers outnumber its bytes")
+    var plist = Plist(top = (usize)top)
+    errdefer plist.close()
+    plist.values = try alloc Value[reader.count] in memory.heap
+    if reference_total > 0:
+        plist.references = try alloc usize[reference_total] in memory.heap
+    if text_total > 0:
+        plist.text = try alloc u8[text_total] in memory.heap
+    var references_used: usize = 0
+    var text_used: usize = 0
+    for index in 0..<reader.count:
+        plist.values[index] = try read_value(&reader, index, &plist, &references_used, &text_used)
+    try check_depth(&plist, max_depth)
+    return plist
+
+## Object `index`, its container references copied into `plist.references` and its
+## UTF-16 converted into `plist.text` at the running totals.
+func read_value(reader: Reader*, index: usize, plist: Plist*, references_used: usize*, text_used: usize*) -> Value!:
+    let head = try reader.head(try reader.offset(index))
+    let tag = head.marker >> 4
+    let low = head.marker & 15
+    var value = Value(kind = kind_null)
+    if tag == 0:
+        if low == 8 or low == 9:
+            value.kind = kind_bool
+            value.integer = (i64)(low == 9)
+        elif low != 0 and low != 15:
+            error(invalid, "an unknown property list marker")
+    elif tag == 1:
+        if low > 4:
+            error(invalid, "a property list integer is wider than 16 bytes")
+        let size = (usize)1 << (usize)low
+        # A 16-byte integer keeps its low eight bytes; eight bytes are signed.
+        let bits = try reader.number(head.start + (size - 8 if size > 8 else 0), size if size <= 8 else 8)
+        value.kind = kind_integer
+        value.integer = (i64)bits
+    elif tag == 2 or head.marker == 0x33:
+        if head.marker == 0x33 or low == 3:
+            value.real = f64.bits(try reader.number(head.start, 8))
+        elif low == 2:
+            value.real = (f64)f32.bits((u32)(try reader.number(head.start, 4)))
+        else:
+            error(invalid, "a property list real is not 4 or 8 bytes")
+        value.kind = kind_date if head.marker == 0x33 else kind_real
+    elif tag == 4 or tag == 5:
+        value.kind = kind_data if tag == 4 else kind_string
+        value.bytes = try reader.span(head, 1)
+    elif tag == 6:
+        let units = try reader.span(head, 2)
+        let used = *text_used
+        let written = utf16_to_utf8(units, plist.text[used..])
+        value.kind = kind_string
+        value.bytes = plist.text[used..<used + written] if written > 0 else b""
+        *text_used = used + written
+    elif tag == 8:
+        value.kind = kind_uid
+        value.integer = (i64)(try reader.number(head.start, (usize)low + 1 if low < 8 else 8))
+    elif tag == 10 or tag == 13:
+        let pairs = head.length * (2 if tag == 13 else 1)
+        let first = *references_used
+        for at in 0..<pairs:
+            plist.references[first + at] = try reader.reference(head.start + at * reader.reference_size)
+        value.kind = kind_dictionary if tag == 13 else kind_array
+        value.first = first
+        value.count = head.length
+        *references_used = first + pairs
+    else:
+        error(invalid, "an unknown property list marker")
+    return value
+
+## `units` (UTF-16, big-endian) as UTF-8 in `out`; returns the bytes written. An
+## unpaired surrogate becomes U+FFFD.
+func utf16_to_utf8(units: const u8[], out: u8[]) -> usize:
+    var written: usize = 0
+    var at: usize = 0
+    let count = units.length // 2
+    while at < count:
+        var scalar = ((u32)units[at * 2] << 8) | (u32)units[at * 2 + 1]
+        at += 1
+        if scalar >= 0xD800 and scalar < 0xDC00 and at < count:
+            let next = ((u32)units[at * 2] << 8) | (u32)units[at * 2 + 1]
+            if next >= 0xDC00 and next < 0xE000:
+                scalar = 0x10000 + ((scalar - 0xD800) << 10) + (next - 0xDC00)
+                at += 1
+        if scalar >= 0xD800 and scalar < 0xE000:
+            scalar = 0xFFFD
+        let size = utf8.encode(scalar, out[written..]) else 0
+        written += size
+    return written
+
+## Rejects containers that hold themselves or nest deeper than `max_depth`: each
+## container is walked once, depth first, marked while it is on the path.
+func check_depth(plist: Plist*, max_depth: usize) -> !:
+    let state = try alloc u8[plist.values.length] in memory.heap
+    defer free(state) in memory.heap
+    for index in 0..<state.length:
+        state[index] = 0
+    for index in 0..<plist.values.length:
+        try visit(plist, state, index, 0, max_depth)
+
+## Walks container `index` at `depth`: state 1 while on the path, 2 once done.
+func visit(plist: Plist*, state: u8[], index: usize, depth: usize, max_depth: usize) -> !:
+    let value = plist.values[index]
+    if value.kind != kind_array and value.kind != kind_dictionary or state[index] == 2:
+        return
+    if state[index] == 1:
+        error(invalid, "a property list container holds itself")
+    if depth >= max_depth:
+        error(limit, "the property list nests deeper than the limit")
+    state[index] = 1
+    let references = value.count * (2 if value.kind == kind_dictionary else 1)
+    for at in 0..<references:
+        try visit(plist, state, plist.references[value.first + at], depth + 1, max_depth)
+    state[index] = 2
+
+## An NSKeyedArchiver graph over a parsed property list. `close` frees it.
+pub struct KeyedArchive:
+    pub var plist: Plist
+    ## The `$objects` array's index.
+    pub var objects: usize
+    ## The root object's index, from `$top`'s "root".
+    pub var root: usize
+
+    ## Object `index` with a UID followed to the archived object it names; none for
+    ## "$null" or a UID that names nothing.
+    pub func resolve(index: usize) -> usize?:
+        let value = self.plist.values[index]
+        if value.kind != kind_uid:
+            return index
+        let archived = self.plist.values[self.objects]
+        if value.integer < 0 or (u64)value.integer >= (u64)archived.count:
+            return none
+        let target = self.plist.item(self.objects, (usize)value.integer)
+        if let text = self.plist.string(target):
+            if text == "$null":
+                return none
+        return target
+
+    ## Member `name` of archived object `object`, followed through its UID.
+    pub func member(object: usize, name: str) -> usize?:
+        let found = self.plist.member(object, name) else return none
+        return self.resolve(found)
+
+    ## Object `index` as text: a string, or an archived NSString's "NS.string".
+    pub func text(index: usize) -> str?:
+        if let text = self.plist.string(index):
+            return text
+        let inner = self.member(index, "NS.string") else return none
+        return self.plist.string(inner)
+
+    pub mutating func close():
+        self.plist.close()
+
+## The NSKeyedArchiver archive in `data`: parsed, with `$objects` and the root
+## found. Fails with `invalid` when the top object is not a keyed archive.
+pub func unarchive(data: const u8[], max_objects: usize = default_object_limit, max_depth: usize = default_depth_limit) -> KeyedArchive!:
+    var plist = try parse(data, max_objects, max_depth)
+    errdefer plist.close()
+    let objects = plist.member(plist.top, "$objects") else error(invalid, "not a keyed archive: no $objects")
+    let top = plist.member(plist.top, "$top") else error(invalid, "not a keyed archive: no $top")
+    if plist.values[objects].kind != kind_array or plist.values[top].kind != kind_dictionary:
+        error(invalid, "not a keyed archive: $objects or $top has the wrong type")
+    var archive = KeyedArchive(plist = plist, objects = objects, root = 0)
+    let root_reference = plist.member(top, "root") else error(invalid, "a keyed archive without a root")
+    archive.root = archive.resolve(root_reference) else error(invalid, "a keyed archive's root is null")
+    return archive
