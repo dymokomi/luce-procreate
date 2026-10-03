@@ -10,8 +10,8 @@
 #
 #==============================================================================================
 import interop
-import procreate
-from procreate import ProcreateBrush
+import brush as procreate
+from brush import ProcreateBrush
 
 pub func main(arguments: str[]) -> i32!:
     var failures = 0

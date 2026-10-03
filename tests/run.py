@@ -33,7 +33,7 @@ def main():
 
     for mode, flags in MODES.items():
         print(f"MODE {mode}", flush=True)
-        run(base, "test", ROOT / "src/luce_procreate/plist_tests.lucb", *flags)
+        run(base, "test", ROOT / "src/plist_tests.lucb", *flags)
         inspect = build / mode / f"inspect{EXE}"
         inspect.parent.mkdir(parents=True, exist_ok=True)
         run(base, "build", ROOT / "tests/inspect.lucb", *flags, "-o", inspect)

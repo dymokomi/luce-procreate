@@ -15,7 +15,7 @@ luce-compress (the ZIP reader); nothing foreign.
 ## From Luce
 
 ```luce
-from procreate import ProcreateBrush
+from luce_procreate.brush import ProcreateBrush
 
 let brush = ProcreateBrush.open("Soft Airbrush.brush")
 print(brush.name())                              # "" when the brush has none

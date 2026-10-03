@@ -10,8 +10,8 @@
 #
 #==============================================================================================
 import memory
-import luce_procreate.plist as plist
-from luce_procreate.plist import Plist, parse, unarchive
+import plist
+from plist import Plist, parse, unarchive
 
 ## Writes a binary property list into a caller's buffer.
 struct Builder:

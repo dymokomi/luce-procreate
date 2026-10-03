@@ -17,12 +17,12 @@
 #
 #==============================================================================================
 import c as c_api
-import files
+import luce_std.files
 import interop
 import memory
 import strings
-import zip
-import luce_procreate.plist as plist
+import luce_compress.zip
+import plist
 
 ## The bytes are not a brush this reader understands.
 pub let invalid = plist.invalid

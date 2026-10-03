@@ -1,6 +1,6 @@
 # A Luce caller reading a brush the way luced-2d will: open it by path, read its
 # name, settings and images, and see a closed brush refuse further use.
-from procreate import ProcreateBrush
+from luce_procreate.brush import ProcreateBrush
 
 pub func main(arguments: list[str]) -> int!:
     assert(arguments.length >= 1)
