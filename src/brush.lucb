@@ -17,11 +17,11 @@
 #
 #==============================================================================================
 import c as c_api
-import luce_std.files
+from luce_std import files
 import interop
 import memory
 import strings
-import luce_compress.zip
+from luce_compress import zip
 import plist
 
 ## The bytes are not a brush this reader understands.

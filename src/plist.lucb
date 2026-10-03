@@ -22,7 +22,7 @@
 #
 #==============================================================================================
 import memory
-import luce_std.utf8
+from luce_std import utf8
 
 ## The bytes are not a binary property list or keyed archive this reader understands.
 pub let invalid: ErrorCode = ErrorCode.package(1)
