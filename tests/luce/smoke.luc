@@ -23,7 +23,7 @@ pub func main(arguments: list[str]) -> int!:
     assert(keys == 1)
     brush.close()
     var refused = false
-    discard(brush.shape_png()) catch failure:
+    _ = brush.shape_png() catch failure:
         refused = true
     assert(refused)
     print("PASS Luce opens a Procreate brush: name, settings, images and close")
