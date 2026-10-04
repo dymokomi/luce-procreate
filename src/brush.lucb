@@ -54,11 +54,9 @@ pub struct ProcreateBrush:
         with memory.heap:
             name = try strings.copy(path)
         defer strings.release(name)
-        var data: u8[]
-        with memory.heap:
-            data = try files.read_limit((c_api.str)name, brush_file_limit)
-        defer free(data) in memory.heap
-        return try ProcreateBrush.from_bytes(data)
+        let data = try files.read((c_api.str)name, limit = brush_file_limit)
+        defer data.release()
+        return try ProcreateBrush.from_bytes(data.value)
 
     ## The brush in `data`, the bytes of a `.brush` file; they are copied, not kept.
     pub static func from_bytes(data: const u8[]) -> interop.Reference[ProcreateBrush]!:
