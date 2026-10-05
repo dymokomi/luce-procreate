@@ -103,7 +103,7 @@ pub struct Plist:
             return none
         return (str)value.bytes
 
-    pub mutating func close():
+    pub func close():
         if self.values.length > 0:
             free(self.values) in memory.heap
         if self.references.length > 0:
@@ -219,11 +219,11 @@ pub func parse(data: const u8[], max_objects: usize = default_object_limit, max_
             error(invalid, "a property list's containers outnumber its bytes")
     var plist = Plist(top = (usize)top)
     errdefer plist.close()
-    plist.values = try alloc Value[reader.count] in memory.heap
+    plist.values = try new Value[reader.count] --- in memory.heap
     if reference_total > 0:
-        plist.references = try alloc usize[reference_total] in memory.heap
+        plist.references = try new usize[reference_total] --- in memory.heap
     if text_total > 0:
-        plist.text = try alloc u8[text_total] in memory.heap
+        plist.text = try new u8[text_total] --- in memory.heap
     var references_used: usize = 0
     var text_used: usize = 0
     for index in 0..<reader.count:
@@ -309,7 +309,7 @@ func utf16_to_utf8(units: const u8[], out: u8[]) -> usize:
 ## Rejects containers that hold themselves or nest deeper than `max_depth`: each
 ## container is walked once, depth first, marked while it is on the path.
 func check_depth(plist: Plist*, max_depth: usize) -> !:
-    let state = try alloc u8[plist.values.length] in memory.heap
+    let state = try new u8[plist.values.length] --- in memory.heap
     defer free(state) in memory.heap
     for index in 0..<state.length:
         state[index] = 0
@@ -366,7 +366,7 @@ pub struct KeyedArchive:
         let inner = self.member(index, "NS.string") else return none
         return self.plist.string(inner)
 
-    pub mutating func close():
+    pub func close():
         self.plist.close()
 
 ## The NSKeyedArchiver archive in `data`: parsed, with `$objects` and the root

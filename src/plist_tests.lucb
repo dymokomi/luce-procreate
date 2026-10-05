@@ -21,49 +21,49 @@ struct Builder:
     var count: usize
 
     ## Start the next object; returns its index.
-    mutating func begin() -> usize:
+    func begin() -> usize:
         self.offsets[self.count] = self.at
         self.count += 1
         return self.count - 1
 
-    mutating func byte(value: u8):
+    func byte(value: u8):
         self.out[self.at] = value
         self.at += 1
 
-    mutating func put(data: const u8[]):
+    func put(data: const u8[]):
         for value in data:
             self.byte(value)
 
     ## An ASCII string object.
-    mutating func ascii(text: str) -> usize:
+    func ascii(text: str) -> usize:
         let index = self.begin()
         self.byte(0x50 | (u8)text.length)
         self.put(text.bytes)
         return index
 
     ## A one-byte integer object.
-    mutating func small(value: u8) -> usize:
+    func small(value: u8) -> usize:
         let index = self.begin()
         self.byte(0x10)
         self.byte(value)
         return index
 
     ## A UID object naming `value`.
-    mutating func uid(value: u8) -> usize:
+    func uid(value: u8) -> usize:
         let index = self.begin()
         self.byte(0x80)
         self.byte(value)
         return index
 
     ## A container header: `marker` (0xA0 array, 0xD0 dictionary) with `count`, then `references`.
-    mutating func container(marker: u8, count: usize, references: const u8[]) -> usize:
+    func container(marker: u8, count: usize, references: const u8[]) -> usize:
         let index = self.begin()
         self.byte(marker | (u8)count)
         self.put(references)
         return index
 
     ## The offset table and trailer; returns the list's length.
-    mutating func finish(top: usize) -> usize:
+    func finish(top: usize) -> usize:
         let table = self.at
         for index in 0..<self.count:
             self.byte((u8)(self.offsets[index] >> 8))
@@ -78,7 +78,7 @@ struct Builder:
         return self.at
 
     ## An eight-byte big-endian trailer field.
-    mutating func word(value: usize):
+    func word(value: usize):
         for shift in 0..<(usize)8:
             self.byte((u8)(value >> ((7 - shift) * 8)))
 
@@ -100,30 +100,30 @@ test "every object kind reads back":
     var buffer: u8[1024]
     var b = builder(buffer)
     # Object 0 is the top array, naming objects 1 to 13.
-    discard(b.container(0xA0, 13, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]))
-    discard(b.begin())
+    _ = b.container(0xA0, 13, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+    _ = b.begin()
     b.byte(0x00)
-    discard(b.begin())
+    _ = b.begin()
     b.byte(0x09)
-    discard(b.small(7))
-    discard(b.begin())
+    _ = b.small(7)
+    _ = b.begin()
     b.put([0x11, 0x01, 0x2C])
-    discard(b.begin())
+    _ = b.begin()
     b.put([0x13, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFB])
-    discard(b.begin())
+    _ = b.begin()
     b.put([0x23, 0x3F, 0xF8, 0, 0, 0, 0, 0, 0])
-    discard(b.begin())
+    _ = b.begin()
     b.put([0x22, 0x3E, 0x80, 0, 0])
-    discard(b.begin())
+    _ = b.begin()
     b.put([0x33, 0x41, 0xC0, 0, 0, 0, 0, 0, 0])
-    discard(b.begin())
+    _ = b.begin()
     b.put([0x42, 0x61, 0x62])
-    discard(b.ascii("hi"))
+    _ = b.ascii("hi")
     # UTF-16: "é" and U+1F600 as a surrogate pair.
-    discard(b.begin())
+    _ = b.begin()
     b.put([0x63, 0x00, 0xE9, 0xD8, 0x3D, 0xDE, 0x00])
-    discard(b.uid(3))
-    discard(b.container(0xD0, 1, [10, 3]))
+    _ = b.uid(3)
+    _ = b.container(0xD0, 1, [10, 3])
     let length = b.finish(0)
     var list = try parse(buffer[..<length])
     defer list.close()
@@ -148,9 +148,9 @@ test "every object kind reads back":
 test "damaged lists fail with their codes":
     var buffer: u8[256]
     var b = builder(buffer)
-    discard(b.container(0xA0, 2, [1, 2]))
-    discard(b.ascii("a"))
-    discard(b.small(1))
+    _ = b.container(0xA0, 2, [1, 2])
+    _ = b.ascii("a")
+    _ = b.small(1)
     let length = b.finish(0)
     var list = try parse(buffer[..<length])
     list.close()
@@ -176,9 +176,9 @@ test "nesting and object counts are limited":
     for index in 0..<(usize)100:
         if index < 99:
             let next: u8[1] = [(u8)(index + 1)]
-            discard(b.container(0xA0, 1, next))
+            _ = b.container(0xA0, 1, next)
         else:
-            discard(b.small(1))
+            _ = b.small(1)
     let length = b.finish(0)
     assert(fails(buffer[..<length], plist.limit))
     var deep = try parse(buffer[..<length], max_depth = 128)
@@ -193,27 +193,27 @@ test "a keyed archive follows UIDs from its root and reads $null as absent":
     var buffer: u8[1024]
     var b = builder(buffer)
     # 0 top {$objects: 1, $top: 2}; 3..5 the keys; 1 $objects [6 $null, 7 root, 8 name, 9 wrapped].
-    discard(b.container(0xD0, 2, [3, 4, 1, 2]))
-    discard(b.container(0xA0, 4, [6, 7, 8, 9]))
-    discard(b.container(0xD0, 1, [5, 10]))
-    discard(b.ascii("$objects"))
-    discard(b.ascii("$top"))
-    discard(b.ascii("root"))
-    discard(b.ascii("$null"))
-    discard(b.container(0xD0, 4, [11, 12, 13, 14, 15, 16, 17, 18]))
-    discard(b.ascii("Soft"))
-    discard(b.container(0xD0, 1, [19, 20]))
-    discard(b.uid(1))
-    discard(b.ascii("name"))
-    discard(b.ascii("gone"))
-    discard(b.ascii("size"))
-    discard(b.ascii("note"))
-    discard(b.uid(2))
-    discard(b.uid(0))
-    discard(b.small(12))
-    discard(b.uid(3))
-    discard(b.ascii("NS.string"))
-    discard(b.ascii("wrapped"))
+    _ = b.container(0xD0, 2, [3, 4, 1, 2])
+    _ = b.container(0xA0, 4, [6, 7, 8, 9])
+    _ = b.container(0xD0, 1, [5, 10])
+    _ = b.ascii("$objects")
+    _ = b.ascii("$top")
+    _ = b.ascii("root")
+    _ = b.ascii("$null")
+    _ = b.container(0xD0, 4, [11, 12, 13, 14, 15, 16, 17, 18])
+    _ = b.ascii("Soft")
+    _ = b.container(0xD0, 1, [19, 20])
+    _ = b.uid(1)
+    _ = b.ascii("name")
+    _ = b.ascii("gone")
+    _ = b.ascii("size")
+    _ = b.ascii("note")
+    _ = b.uid(2)
+    _ = b.uid(0)
+    _ = b.small(12)
+    _ = b.uid(3)
+    _ = b.ascii("NS.string")
+    _ = b.ascii("wrapped")
     let length = b.finish(0)
     var archive = try unarchive(buffer[..<length])
     defer archive.close()
