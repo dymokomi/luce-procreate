@@ -1,0 +1,30 @@
+# luce-procreate against Python: the generated brushes (fixtures.py) are read by the inspect
+# driver as Python's zipfile and plistlib read them, broken ones refused (check_brushes.py),
+# and a Luce caller (tests/luce/smoke.luc) reads one the way luced-2d does.
+# LUCE_PROCREATE_BRUSHES names a folder of real .brush files to check as well.
+from luce_std import files, paths, process
+
+let failed = ErrorCode.package(1)
+
+func run(program: str, arguments: list[str], directory: str) -> unit!:
+    let done = process.run(program, arguments, directory)
+    if done.exit_code != 0:
+        error(failed, f"{program} {arguments}: exit status {done.exit_code}\n{done.output}{done.error_output}")
+
+pub func main(arguments: list[str]) -> int!:
+    let root = process.current_directory()
+    let here = process.variable("LUC_TEST_DIR") else paths.join(root, "tests/oracle")
+    let work = paths.join(root, "build/tests/oracle/work")
+    files.ensure_directory(work)
+    let inspect = paths.join(work, "inspect")
+    run(process.variable("LUCE_BASE") else "luce-base", ["build", paths.join(here, "inspect.lucb"), "--native", "-o", inspect], root)
+    let fixtures = paths.join(work, "fixtures")
+    var words = ["oracle.py", inspect, fixtures]
+    if let brushes = process.variable("LUCE_PROCREATE_BRUSHES"):
+        words.append(brushes)
+    run("python3", words, here)
+    let smoke = paths.join(work, "smoke")
+    run(process.variable("LUCE") else "luce", ["build", paths.join(root, "tests/luce/smoke.luc"), "--native", "-o", smoke], root)
+    run(smoke, [paths.join(fixtures, "tiny.brush")], root)
+    print("ok inspect reads the fixtures as Python does, and a Luce caller reads a brush")
+    return 0

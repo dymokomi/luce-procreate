@@ -6,7 +6,7 @@
 #       A small builder writes objects, the offset table (two-byte offsets) and the
 #       trailer (one-byte references), so each test can state exactly the bytes it
 #       reads, damage them, and check the error. Real brushes and a plistlib-written
-#       fixture are checked by tests/run.py through tests/inspect.lucb.
+#       fixture are checked by tests/oracle through its inspect.lucb.
 #
 #==============================================================================================
 import memory

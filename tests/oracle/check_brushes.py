@@ -1,8 +1,8 @@
-"""Compares tests/inspect's reading of brushes with Python's zipfile and plistlib.
+"""Compares tests/oracle/inspect's reading of brushes with Python's zipfile and plistlib.
 
 `check(inspect, good, bad)` runs the driver over `good` brushes (each must read the
 same as Python reads it) and `bad` ones (each must fail). Run directly with a folder
-to check every .brush under it: `python3 tests/check_brushes.py build/inspect DIR`."""
+to check every .brush under it: `python3 tests/oracle/check_brushes.py build/tests/oracle/work/inspect DIR`."""
 import math
 import plistlib
 import subprocess

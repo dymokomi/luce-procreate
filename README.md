@@ -58,13 +58,13 @@ it: `KeyedArchive.root`, `member(object, key)` (UID followed, `$null` absent),
 ## Tests
 
 ```
-./test.sh                                        # native and C modes
-python3 tests/run.py --brushes ~/Brushes          # also every .brush under a folder
+luc test
+LUCE_PROCREATE_BRUSHES=~/Brushes luc test   # also every .brush under a folder
 ```
 
-`tests/run.py` runs the property list's test blocks (every object kind, damaged and
-truncated lists, cycles, nesting and count limits, a keyed archive), writes fixtures
-with Python's plistlib and zipfile (`tests/fixtures.py`: a small brush of our own and
-four broken ones), checks `tests/inspect.lucb`'s reading of them against Python's,
+`luc test` runs the property list's test blocks (every object kind, damaged and
+truncated lists, cycles, nesting and count limits, a keyed archive) and `tests/oracle`,
+which writes fixtures with Python's plistlib and zipfile (`fixtures.py`: a small brush of
+our own and four broken ones), checks `inspect.lucb`'s reading of them against Python's,
 and builds a Luce caller (`tests/luce/smoke.luc`). No third-party brushes are in the
-repository; `--brushes` checks a local collection the same way.
+repository; `LUCE_PROCREATE_BRUSHES` checks a local collection the same way.
